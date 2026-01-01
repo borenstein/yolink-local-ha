@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to YoLink Local Hub",
+        "description": "Enter your YoLink Local Hub credentials. You can find these in the YoLink app under Local Hub → Local Network → Integrations → Local API.",
+        "data": {
+          "hub_ip": "Hub IP Address",
+          "client_id": "Client ID",
+          "client_secret": "Client Secret",
+          "net_id": "Net ID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the hub",
+      "invalid_auth": "Invalid authentication credentials"
+    },
+    "abort": {
+      "already_configured": "This hub is already configured"
+    }
+  }
+}
+
