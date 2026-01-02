@@ -7,7 +7,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from yolocal.const import (
+from .const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_HUB_IP,
@@ -17,7 +17,7 @@ from yolocal.const import (
     DOMAIN,
     PLATFORMS,
 )
-from yolocal.coordinator import YoLocalCoordinator, create_coordinator
+from .coordinator import YoLocalCoordinator, create_coordinator
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -10,9 +10,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from yolocal.const import DOMAIN
-from yolocal.coordinator import YoLocalCoordinator
-from yolocal.entity import YoLocalEntity
+from .const import DOMAIN
+from .coordinator import YoLocalCoordinator
+from .entity import YoLocalEntity
 
 
 DEVICE_TYPE_TO_CLASS = {

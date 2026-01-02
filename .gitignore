@@ -208,3 +208,6 @@ __marimo__/
 
 # Project secrets (local YoLink hub credentials)
 .secrets.json
+
+# Local dashboard file (not part of the integration)
+security.yaml

@@ -7,9 +7,9 @@ from typing import Any
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from yolocal.api import Device
-from yolocal.const import DOMAIN
-from yolocal.coordinator import YoLocalCoordinator
+from .api import Device
+from .const import DOMAIN
+from .coordinator import YoLocalCoordinator
 
 
 class YoLocalEntity(CoordinatorEntity[YoLocalCoordinator]):

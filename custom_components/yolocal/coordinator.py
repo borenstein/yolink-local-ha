@@ -11,14 +11,14 @@ import aiohttp
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from yolocal.api import (
+from .api import (
     Device,
     DeviceEvent,
     TokenManager,
     YoLinkClient,
     YoLinkMQTTClient,
 )
-from yolocal.api.auth import AuthenticationError
+from .api.auth import AuthenticationError
 
 _LOGGER = logging.getLogger(__name__)
 

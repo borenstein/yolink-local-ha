@@ -6,8 +6,8 @@ from typing import Any
 
 import aiohttp
 
-from yolocal.api.auth import AuthenticationError, TokenManager
-from yolocal.api.device import Device
+from .auth import AuthenticationError, TokenManager
+from .device import Device
 
 
 class ApiError(Exception):

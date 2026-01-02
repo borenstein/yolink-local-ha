@@ -4,10 +4,10 @@ This module contains pure Python code for communicating with the YoLink
 Local Hub. It has no Home Assistant dependencies.
 """
 
-from yolocal.api.auth import AuthenticationError, TokenManager
-from yolocal.api.client import ApiError, YoLinkClient, create_client
-from yolocal.api.device import Device
-from yolocal.api.mqtt import DeviceEvent, YoLinkMQTTClient
+from .auth import AuthenticationError, TokenManager
+from .client import ApiError, YoLinkClient, create_client
+from .device import Device
+from .mqtt import DeviceEvent, YoLinkMQTTClient
 
 __all__ = [
     "ApiError",

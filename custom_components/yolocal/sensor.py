@@ -12,9 +12,9 @@ from homeassistant.const import PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from yolocal.const import DOMAIN
-from yolocal.coordinator import YoLocalCoordinator
-from yolocal.entity import YoLocalEntity
+from .const import DOMAIN
+from .coordinator import YoLocalCoordinator
+from .entity import YoLocalEntity
 
 
 async def async_setup_entry(
