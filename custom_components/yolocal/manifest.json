@@ -8,6 +8,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/dbborens/yolink-local-ha/issues",
   "requirements": ["paho-mqtt>=2.0.0"],
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "icon": "mdi:router-wireless"
 }
 
