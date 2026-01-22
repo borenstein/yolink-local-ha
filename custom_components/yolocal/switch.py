@@ -8,6 +8,13 @@ from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.const import PERCENTAGE
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 
 from .const import DOMAIN
 from .coordinator import YoLocalCoordinator
@@ -25,6 +32,8 @@ async def async_setup_entry(
     entities: list[SwitchEntity] = []
     for device in coordinator.devices.values():
         if device.device_type == "Outlet":
+            entities.append(YoLocalSwitch(coordinator, device))
+        if device.device_type == "Manipulator":
             entities.append(YoLocalSwitch(coordinator, device))
 
     async_add_entities(entities)
