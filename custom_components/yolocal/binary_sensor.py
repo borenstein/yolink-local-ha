@@ -6,9 +6,17 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.const import PERCENTAGE
 
 from .const import DOMAIN
 from .coordinator import YoLocalCoordinator
@@ -38,6 +46,7 @@ async def async_setup_entry(
     for device in coordinator.devices.values():
         if device.device_type in DEVICE_TYPE_TO_CLASS:
             entities.append(YoLocalBinarySensor(coordinator, device))
+            entities.append(YoLocalBatterySensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -65,4 +74,30 @@ class YoLocalBinarySensor(YoLocalEntity, BinarySensorEntity):
         if sensor_state is None:
             return None
         return sensor_state == self._on_state
+    
+class YoLocalBatterySensor(YoLocalEntity, SensorEntity):
+    """Battery sensor for YoLink devices."""
 
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_name = "Battery"
+
+    def __init__(self, coordinator: YoLocalCoordinator, device) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_battery"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the battery level as percentage."""
+        state = self.device_state.get("state", {})
+        if isinstance(state, dict):
+            level = state.get("battery")
+        else:
+            level = self.device_state.get("battery")
+
+        if level is None:
+            return None
+        # YoLink reports 0-4, convert to percentage
+        return min(level * 25, 100)
