@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import aiohttp
 
 from .auth import AuthenticationError, TokenManager
 from .device import Device
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
@@ -43,6 +46,7 @@ class YoLinkClient:
     async def get_devices(self) -> list[Device]:
         """Fetch the list of devices from the hub."""
         result = await self._request({"method": "Home.getDeviceList"})
+        #_LOGGER.info("Fetched devices from hub: %s", result)
         return [Device.from_api(d) for d in result.get("devices", [])]
 
     async def get_state(self, device: Device) -> dict[str, Any]:

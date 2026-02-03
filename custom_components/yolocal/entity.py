@@ -35,6 +35,7 @@ class YoLocalEntity(CoordinatorEntity[YoLocalCoordinator]):
             name=self._device.name,
             manufacturer="YoLink",
             model=self._device.device_type,
+            serial_number=self._device.device_id
         )
 
     @property

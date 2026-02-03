@@ -134,14 +134,16 @@ class YoLinkMQTTClient:
         try:
             payload = json.loads(msg.payload.decode())
             event = DeviceEvent.from_payload(payload)
-            for callback in self._callbacks:
-                try:
-                    if self._loop:
-                        self._loop.call_soon_threadsafe(callback, event)
-                    else:
-                        callback(event)
-                except Exception:
-                    _LOGGER.exception("Error in event callback")
+            if (event.event == "THSensor.Report"):
+                #_LOGGER.info("MQTT Event: %s", event)
+                for callback in self._callbacks:
+                    try:
+                        if self._loop:
+                            self._loop.call_soon_threadsafe(callback, event)
+                        else:
+                            callback(event)
+                    except Exception:
+                        _LOGGER.exception("Error in event callback")
         except json.JSONDecodeError:
             _LOGGER.error("Failed to decode MQTT message: %s", msg.payload)
         except Exception:
