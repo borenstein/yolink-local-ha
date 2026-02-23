@@ -56,6 +56,24 @@ class YoLocalTemperatureSensor(YoLocalEntity, SensorEntity):
             return state.get("temperature")
         return self.device_state.get("temperature")
 
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Return additional state attributes."""
+        attrs = {}
+        
+        # Device identification
+        attrs["device_id"] = self._device.device_id
+        attrs["device_model"] = self._device.device_type
+        
+        state = self.device_state.get("state", {})
+        
+        if isinstance(state, dict):
+            # Firmware version
+            if "version" in state:
+                attrs["firmware_version"] = state.get("version")
+        
+        return attrs
+
 
 class YoLocalHumiditySensor(YoLocalEntity, SensorEntity):
     """Humidity sensor for YoLink THSensor."""
@@ -77,6 +95,24 @@ class YoLocalHumiditySensor(YoLocalEntity, SensorEntity):
         if isinstance(state, dict):
             return state.get("humidity")
         return self.device_state.get("humidity")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Return additional state attributes."""
+        attrs = {}
+        
+        # Device identification
+        attrs["device_id"] = self._device.device_id
+        attrs["device_model"] = self._device.device_type
+        
+        state = self.device_state.get("state", {})
+        
+        if isinstance(state, dict):
+            # Firmware version
+            if "version" in state:
+                attrs["firmware_version"] = state.get("version")
+        
+        return attrs
 
 
 class YoLocalBatterySensor(YoLocalEntity, SensorEntity):
@@ -105,4 +141,25 @@ class YoLocalBatterySensor(YoLocalEntity, SensorEntity):
             return None
         # YoLink reports 0-4, convert to percentage
         return min(level * 25, 100)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Return additional state attributes."""
+        attrs = {}
+        
+        # Device identification
+        attrs["device_id"] = self._device.device_id
+        attrs["device_model"] = self._device.device_type
+        
+        state = self.device_state.get("state", {})
+        
+        if isinstance(state, dict):
+            # Firmware version
+            if "version" in state:
+                attrs["firmware_version"] = state.get("version")
+            # Raw battery level
+            if "battery" in state:
+                attrs["battery_raw"] = state.get("battery")
+        
+        return attrs
 
