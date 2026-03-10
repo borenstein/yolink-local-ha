@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+import asyncio
 
 from custom_components.yolocal.api.device import Device
 from custom_components.yolocal.coordinator import YoLocalCoordinator
@@ -89,6 +90,29 @@ def test_merge_device_state_preserves_existing_nested_fields() -> None:
     assert merged["online"] is True
     assert merged["lastReportedAt"] == "2026-03-09T12:00:00+00:00"
     assert merged["state"] == {"battery": 4, "state": "closed"}
+
+
+def test_merge_device_state_folds_flat_battery_into_nested_state() -> None:
+    """Non-TH MQTT diagnostics should refresh nested state values too."""
+    coordinator = make_coordinator()
+    device_id = make_device_id("motion-flat")
+    coordinator._states[device_id] = {
+        "online": True,
+        "state": {"battery": 2, "state": "normal"},
+    }
+
+    merged = coordinator._merge_device_state(
+        device_id,
+        {
+            "state": "alert",
+            "battery": 4,
+            "lastReportedAt": "2026-03-09T12:00:00+00:00",
+        },
+    )
+
+    assert merged["battery"] == 4
+    assert merged["state"]["state"] == "alert"
+    assert merged["state"]["battery"] == 4
 
 
 def test_merge_device_state_revives_offline_device_on_fresh_report() -> None:
@@ -256,6 +280,141 @@ def test_th_limit_sensor_filters_sentinel_values() -> None:
     coordinator._states[device.device_id] = {"state": {"tempLimit": {"max": 32}}}
     sensor = YoLocalTHLimitSensor(coordinator, device, "temperature", "max")
     assert sensor.native_value == 32
+
+
+def test_async_update_data_refreshes_battery_from_hub_state() -> None:
+    """Scheduled refresh should update diagnostic fields like battery."""
+    coordinator = make_coordinator()
+    device = make_device(device_id=make_device_id("refresh"), device_type="DoorSensor")
+    coordinator._devices[device.device_id] = device
+    coordinator._states[device.device_id] = {
+        "online": True,
+        "state": {"battery": 1, "state": "closed"},
+    }
+
+    async def get_state(_device: Device) -> dict[str, object]:
+        return {
+            "reportAt": "2026-03-09T12:00:00+00:00",
+            "state": {"battery": 4},
+        }
+
+    coordinator._client = SimpleNamespace(get_state=get_state, host="127.0.0.1")
+
+    refreshed = asyncio.run(coordinator._async_update_data())
+
+    assert refreshed[device.device_id]["lastReportedAt"] == "2026-03-09T12:00:00+00:00"
+    assert refreshed[device.device_id]["state"] == {"battery": 4, "state": "closed"}
+    assert coordinator._states[device.device_id]["state"]["battery"] == 4
+
+
+def test_async_update_data_keeps_old_state_when_refresh_fails() -> None:
+    """A failed per-device refresh should not drop the cached state."""
+    coordinator = make_coordinator()
+    device = make_device(device_id=make_device_id("refresh-fail"), device_type="DoorSensor")
+    coordinator._devices[device.device_id] = device
+    coordinator._states[device.device_id] = {
+        "online": True,
+        "state": {"battery": 2, "state": "open"},
+    }
+
+    async def get_state(_device: Device) -> dict[str, object]:
+        raise RuntimeError("boom")
+
+    coordinator._client = SimpleNamespace(get_state=get_state, host="127.0.0.1")
+
+    refreshed = asyncio.run(coordinator._async_update_data())
+
+    assert refreshed[device.device_id] == coordinator._states[device.device_id]
+    assert refreshed[device.device_id]["state"]["battery"] == 2
+
+
+def test_async_update_data_skips_poll_for_recent_report() -> None:
+    """Recent MQTT reports should suppress repair polling."""
+    coordinator = make_coordinator()
+    device = make_device(device_id=make_device_id("recent"), device_type="DoorSensor")
+    coordinator._devices[device.device_id] = device
+    fresh = datetime.now(UTC) - timedelta(minutes=5)
+    coordinator._states[device.device_id] = {
+        "online": True,
+        "lastReportedAt": fresh.isoformat(),
+        "state": {"battery": 3, "state": "closed"},
+    }
+
+    calls: list[str] = []
+
+    async def get_state(_device: Device) -> dict[str, object]:
+        calls.append("called")
+        return {"state": {"battery": 4}}
+
+    coordinator._client = SimpleNamespace(get_state=get_state, host="127.0.0.1")
+
+    refreshed = asyncio.run(coordinator._async_update_data())
+
+    assert calls == []
+    assert refreshed[device.device_id]["state"]["battery"] == 3
+
+
+def test_async_update_data_polls_when_report_is_old() -> None:
+    """Old reports should still trigger repair polling."""
+    coordinator = make_coordinator()
+    device = make_device(device_id=make_device_id("old"), device_type="DoorSensor")
+    coordinator._devices[device.device_id] = device
+    stale = datetime.now(UTC) - timedelta(minutes=11)
+    coordinator._states[device.device_id] = {
+        "online": True,
+        "lastReportedAt": stale.isoformat(),
+        "state": {"battery": 1, "state": "closed"},
+    }
+
+    calls: list[str] = []
+
+    async def get_state(_device: Device) -> dict[str, object]:
+        calls.append("called")
+        return {
+            "reportAt": "2026-03-09T12:00:00+00:00",
+            "state": {"battery": 4},
+        }
+
+    coordinator._client = SimpleNamespace(get_state=get_state, host="127.0.0.1")
+
+    refreshed = asyncio.run(coordinator._async_update_data())
+
+    assert calls == ["called"]
+    assert refreshed[device.device_id]["state"]["battery"] == 4
+
+
+def test_async_setup_publishes_initial_data_to_coordinator() -> None:
+    """Initial setup should seed coordinator.data for HA refresh lifecycle."""
+    coordinator = make_coordinator()
+    device = make_device(device_id=make_device_id("setup"), device_type="DoorSensor")
+
+    async def get_devices() -> list[Device]:
+        return [device]
+
+    async def get_state(_device: Device) -> dict[str, object]:
+        return {
+            "reportAt": "2026-03-09T12:00:00+00:00",
+            "state": {"battery": 4, "state": "closed"},
+        }
+
+    async def connect_mqtt() -> None:
+        return None
+
+    coordinator._client = SimpleNamespace(
+        get_devices=get_devices,
+        get_state=get_state,
+        host="127.0.0.1",
+    )
+    coordinator._connect_mqtt = connect_mqtt
+
+    asyncio.run(coordinator._async_setup())
+
+    assert coordinator.data is not None
+    assert coordinator.data[device.device_id]["state"]["battery"] == 4
+    assert (
+        coordinator.data[device.device_id]["lastReportedAt"]
+        == "2026-03-09T12:00:00+00:00"
+    )
 
 
 def test_device_from_api_preserves_motion_sensor_type_for_7805() -> None:

@@ -10,6 +10,7 @@ import aiohttp
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from .api import (
     Device,
@@ -21,6 +22,7 @@ from .api import (
 from .const import STATE_REFRESH_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
+RECENT_REPORT_THRESHOLD_SECONDS = 10 * 60
 
 
 class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -88,6 +90,10 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 exc_info=True,
             )
             self._on_mqtt_disconnect()
+
+        # Publish initial state through the coordinator so HA can treat this
+        # instance as having current data and schedule future refreshes.
+        self.async_set_updated_data(self._states.copy())
 
     async def async_shutdown(self) -> None:
         """Shut down the coordinator."""
@@ -165,12 +171,9 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         new_state = self._sanitize_state_payload({**existing_state, **event_data})
         self._apply_event_availability(existing_state, event_data, new_state)
 
-        merged_nested_state = self._merge_nested_state(
-            existing_state.get("state"),
-            event_data.get("state"),
-        )
-        if merged_nested_state is not None:
-            new_state["state"] = self._sanitize_nested_state(merged_nested_state)
+        merged_state_obj = self._build_device_nested_state(existing_state, event_data)
+        if merged_state_obj:
+            new_state["state"] = self._sanitize_nested_state(merged_state_obj)
 
         return new_state
 
@@ -234,6 +237,34 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
 
         return merged_state_obj
 
+    def _build_device_nested_state(
+        self,
+        existing_state: dict[str, Any],
+        event_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the nested state object for non-TH devices."""
+        merged_state_obj: dict[str, Any] = {}
+
+        existing_nested_state = existing_state.get("state")
+        if isinstance(existing_nested_state, dict):
+            merged_state_obj.update(existing_nested_state)
+
+        merged_nested_state = self._merge_nested_state(
+            existing_nested_state,
+            event_data.get("state"),
+        )
+        if isinstance(merged_nested_state, dict):
+            merged_state_obj.update(merged_nested_state)
+        elif merged_nested_state is not None:
+            merged_state_obj["state"] = merged_nested_state
+
+        for key, value in event_data.items():
+            if key in {"state", "online", "reportAt", "lastReportedAt"}:
+                continue
+            merged_state_obj[key] = value
+
+        return merged_state_obj
+
     def _sanitize_state_payload(self, state: dict[str, Any]) -> dict[str, Any]:
         """Remove inaccurate fields from a state payload."""
         sanitized = dict(state)
@@ -292,8 +323,50 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             backoff_seconds = min(backoff_seconds * 2, 300)
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
-        """Republish cached state so availability can age out silent devices."""
-        return self._states.copy()
+        """Refresh device state from the hub and merge it into the cache."""
+        refreshed_states = self._states.copy()
+        now = dt_util.utcnow()
+
+        for device_id, device in self._devices.items():
+            cached_state = refreshed_states.get(device_id, {})
+            report_at = cached_state.get("lastReportedAt")
+            if report_at:
+                try:
+                    last_report = dt_util.parse_datetime(report_at)
+                except Exception:
+                    last_report = None
+                if (
+                    last_report is not None
+                    and (now - last_report).total_seconds() < RECENT_REPORT_THRESHOLD_SECONDS
+                ):
+                    continue
+
+            try:
+                state = await self._client.get_state(device)
+            except Exception:
+                _LOGGER.warning("Failed to refresh state for %s", device.name)
+                continue
+
+            normalized_state = self._sanitize_state_payload(state)
+            if (
+                normalized_state.get("reportAt")
+                and "lastReportedAt" not in normalized_state
+            ):
+                normalized_state["lastReportedAt"] = normalized_state["reportAt"]
+
+            if device.device_type == "THSensor":
+                refreshed_states[device_id] = self._merge_thsensor_state(
+                    device_id,
+                    normalized_state,
+                )
+            else:
+                refreshed_states[device_id] = self._merge_device_state(
+                    device_id,
+                    normalized_state,
+                )
+
+        self._states = refreshed_states
+        return refreshed_states.copy()
 
     def get_state(self, device_id: str) -> dict[str, Any]:
         """Get the current state for a device."""
