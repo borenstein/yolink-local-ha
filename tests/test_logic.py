@@ -91,6 +91,28 @@ def test_merge_device_state_preserves_existing_nested_fields() -> None:
     assert merged["state"] == {"battery": 4, "state": "closed"}
 
 
+def test_merge_device_state_revives_offline_device_on_fresh_report() -> None:
+    """A new report should bring a device back online even without an `online` field."""
+    coordinator = make_coordinator()
+    device_id = make_device_id("motion")
+    coordinator._states[device_id] = {
+        "online": False,
+        "lastReportedAt": "2026-03-08T12:00:00+00:00",
+        "state": {"battery": 1, "state": "normal"},
+    }
+
+    merged = coordinator._merge_device_state(
+        device_id,
+        {
+            "lastReportedAt": "2026-03-09T12:00:00+00:00",
+            "state": {"battery": 4},
+        },
+    )
+
+    assert merged["online"] is True
+    assert merged["state"] == {"battery": 4, "state": "normal"}
+
+
 def test_merge_thsensor_state_preserves_diagnostics_and_ignores_empty_updates() -> None:
     """TH events should retain cached diagnostics and skip empty sentinel updates."""
     coordinator = make_coordinator()
@@ -122,6 +144,29 @@ def test_merge_thsensor_state_preserves_diagnostics_and_ignores_empty_updates() 
     assert merged["state"]["temperature"] == 21.5
     assert merged["state"]["version"] == "1.0.0"
     assert "lastReportedAt" not in merged["state"]
+
+
+def test_merge_thsensor_state_revives_offline_device_on_fresh_report() -> None:
+    """TH reports should also restore availability when the hub omits `online`."""
+    coordinator = make_coordinator()
+    device_id = make_device_id("th-revive")
+    coordinator._states[device_id] = {
+        "online": False,
+        "lastReportedAt": "2026-03-08T12:00:00+00:00",
+        "state": {"temperature": 21.5, "humidity": 48},
+    }
+
+    merged = coordinator._merge_thsensor_state(
+        device_id,
+        {
+            "lastReportedAt": "2026-03-09T12:00:00+00:00",
+            "humidity": 52,
+        },
+    )
+
+    assert merged["online"] is True
+    assert merged["state"]["temperature"] == 21.5
+    assert merged["state"]["humidity"] == 52
 
 
 def test_merge_device_state_strips_inaccurate_battery_type() -> None:

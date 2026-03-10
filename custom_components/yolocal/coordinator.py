@@ -163,6 +163,7 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         """Merge event data into cached state for non-TH devices."""
         existing_state = self._states.get(device_id, {})
         new_state = self._sanitize_state_payload({**existing_state, **event_data})
+        self._apply_event_availability(existing_state, event_data, new_state)
 
         merged_nested_state = self._merge_nested_state(
             existing_state.get("state"),
@@ -179,12 +180,27 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         """Merge TH sensor events while preserving API-only diagnostic fields."""
         existing_state = self._states.get(device_id, {})
         new_state = self._sanitize_state_payload({**existing_state, **event_data})
+        self._apply_event_availability(existing_state, event_data, new_state)
 
         merged_state_obj = self._build_thsensor_nested_state(existing_state, event_data)
         if merged_state_obj:
             new_state["state"] = self._sanitize_nested_state(merged_state_obj)
 
         return new_state
+
+    def _apply_event_availability(
+        self,
+        existing_state: dict[str, Any],
+        event_data: dict[str, Any],
+        merged_state: dict[str, Any],
+    ) -> None:
+        """Mark a device online again when a fresh report arrives."""
+        if "online" in event_data:
+            return
+
+        reported_at = event_data.get("lastReportedAt")
+        if reported_at and reported_at != existing_state.get("lastReportedAt"):
+            merged_state["online"] = True
 
     def _build_thsensor_nested_state(
         self,
