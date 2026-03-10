@@ -21,6 +21,62 @@ from .coordinator import YoLocalCoordinator
 from .entity import YoLocalEntity
 
 
+def build_sensor_entities(
+    coordinator: YoLocalCoordinator,
+    device,
+) -> list[SensorEntity]:
+    """Build all sensor entities for a device."""
+    entities: list[SensorEntity] = [
+        YoLocalBatterySensor(coordinator, device),
+        YoLocalFirmwareSensor(coordinator, device),
+        YoLocalLastReportedSensor(coordinator, device),
+    ]
+
+    if device.device_type == "THSensor":
+        has_threshold_sensors = device.model not in {"YS8003-UC", "YS8004-UC"}
+        entities.append(YoLocalTemperatureSensor(coordinator, device))
+        if device.display_type == "THSensor":
+            entities.append(YoLocalTHModeSensor(coordinator, device))
+        entities.append(YoLocalTHIntervalSensor(coordinator, device))
+        entities.append(
+            YoLocalTHCorrectionSensor(coordinator, device, "temperature")
+        )
+        if has_threshold_sensors:
+            entities.append(
+                YoLocalTHLimitSensor(coordinator, device, "temperature", "max")
+            )
+            entities.append(
+                YoLocalTHLimitSensor(coordinator, device, "temperature", "min")
+            )
+        if device.display_type != "TempSensor":
+            entities.append(YoLocalHumiditySensor(coordinator, device))
+            entities.append(
+                YoLocalTHCorrectionSensor(coordinator, device, "humidity")
+            )
+            if has_threshold_sensors:
+                entities.append(
+                    YoLocalTHLimitSensor(coordinator, device, "humidity", "max")
+                )
+                entities.append(
+                    YoLocalTHLimitSensor(coordinator, device, "humidity", "min")
+                )
+    elif device.device_type == "MotionSensor":
+        entities.append(YoLocalDeviceTemperatureSensor(coordinator, device))
+        entities.append(YoLocalMotionSensitivitySensor(coordinator, device))
+        entities.append(YoLocalMotionNoMotionDelaySensor(coordinator, device))
+        entities.append(YoLocalMotionAlertIntervalSensor(coordinator, device))
+    elif device.device_type == "LeakSensor":
+        entities.append(YoLocalDeviceTemperatureSensor(coordinator, device))
+        entities.append(YoLocalLeakSensorModeSensor(coordinator, device))
+        entities.append(YoLocalLeakIntervalSensor(coordinator, device))
+    elif device.device_type == "DoorSensor":
+        entities.append(YoLocalDoorDelaySensor(coordinator, device))
+        entities.append(YoLocalDoorOpenRemindDelaySensor(coordinator, device))
+        entities.append(YoLocalDoorAlertIntervalSensor(coordinator, device))
+
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -29,59 +85,37 @@ async def async_setup_entry(
     """Set up YoLink sensors from a config entry."""
     coordinator: YoLocalCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[SensorEntity] = []
-    for device in coordinator.devices.values():
-        # All devices get battery, firmware, and last reported sensors
-        entities.append(YoLocalBatterySensor(coordinator, device))
-        entities.append(YoLocalFirmwareSensor(coordinator, device))
-        entities.append(YoLocalLastReportedSensor(coordinator, device))
-        # Device-specific sensors
-        if device.device_type == "THSensor":
-            has_threshold_sensors = device.model not in {"YS8003-UC", "YS8004-UC"}
-            entities.append(YoLocalTemperatureSensor(coordinator, device))
-            # YS8003-UC has an LCD that can toggle C/F display.
-            if device.display_type == "THSensor":
-                entities.append(YoLocalTHModeSensor(coordinator, device))
-            entities.append(YoLocalTHIntervalSensor(coordinator, device))
-            entities.append(
-                YoLocalTHCorrectionSensor(coordinator, device, "temperature")
-            )
-            # Threshold entities are disabled for models with broken/sentinel limits.
-            if has_threshold_sensors:
-                entities.append(
-                    YoLocalTHLimitSensor(coordinator, device, "temperature", "max")
-                )
-                entities.append(
-                    YoLocalTHLimitSensor(coordinator, device, "temperature", "min")
-                )
-            # YS8004-UC is temperature-only.
-            if device.display_type != "TempSensor":
-                entities.append(YoLocalHumiditySensor(coordinator, device))
-                entities.append(
-                    YoLocalTHCorrectionSensor(coordinator, device, "humidity")
-                )
-                if has_threshold_sensors:
-                    entities.append(
-                        YoLocalTHLimitSensor(coordinator, device, "humidity", "max")
-                    )
-                    entities.append(
-                        YoLocalTHLimitSensor(coordinator, device, "humidity", "min")
-                    )
-        elif device.device_type == "MotionSensor":
-            entities.append(YoLocalDeviceTemperatureSensor(coordinator, device))
-            entities.append(YoLocalMotionSensitivitySensor(coordinator, device))
-            entities.append(YoLocalMotionNoMotionDelaySensor(coordinator, device))
-            entities.append(YoLocalMotionAlertIntervalSensor(coordinator, device))
-        elif device.device_type == "LeakSensor":
-            entities.append(YoLocalDeviceTemperatureSensor(coordinator, device))
-            entities.append(YoLocalLeakSensorModeSensor(coordinator, device))
-            entities.append(YoLocalLeakIntervalSensor(coordinator, device))
-        elif device.device_type == "DoorSensor":
-            entities.append(YoLocalDoorDelaySensor(coordinator, device))
-            entities.append(YoLocalDoorOpenRemindDelaySensor(coordinator, device))
-            entities.append(YoLocalDoorAlertIntervalSensor(coordinator, device))
+    entities_by_device_id: dict[str, list[SensorEntity]] = {}
 
-    async_add_entities(entities)
+    def add_devices(devices) -> None:
+        new_entities: list[SensorEntity] = []
+        for device in devices:
+            if device.device_id in entities_by_device_id:
+                continue
+            built = build_sensor_entities(coordinator, device)
+            if not built:
+                continue
+            entities_by_device_id[device.device_id] = built
+            new_entities.extend(built)
+        if new_entities:
+            async_add_entities(new_entities)
+
+    async def remove_devices(device_ids: list[str]) -> None:
+        for device_id in device_ids:
+            for entity in entities_by_device_id.pop(device_id, []):
+                if isinstance(entity, YoLocalEntity):
+                    await entity.async_remove_from_hass()
+
+    def handle_registry_change(added_devices, removed_devices) -> None:
+        add_devices(added_devices)
+        removed_ids = [device.device_id for device in removed_devices]
+        if removed_ids:
+            hass.async_create_task(remove_devices(removed_ids))
+
+    entry.async_on_unload(
+        coordinator.register_device_registry_listener(handle_registry_change)
+    )
+    add_devices(coordinator.devices.values())
 
 
 # ============================================================================

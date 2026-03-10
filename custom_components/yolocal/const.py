@@ -14,6 +14,7 @@ CONF_NET_ID = "net_id"
 DEFAULT_HTTP_PORT = 1080
 DEFAULT_MQTT_PORT = 18080
 STATE_REFRESH_INTERVAL = timedelta(minutes=5)
+DEVICE_DISCOVERY_INTERVAL = timedelta(minutes=1)
 
 # API endpoints
 TOKEN_ENDPOINT = "/open/yolink/token"

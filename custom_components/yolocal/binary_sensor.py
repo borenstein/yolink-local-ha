@@ -39,11 +39,11 @@ async def async_setup_entry(
     """Set up YoLink binary sensors from a config entry."""
     coordinator: YoLocalCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[BinarySensorEntity] = []
-    for device in coordinator.devices.values():
+    def build_entities(device) -> list[BinarySensorEntity]:
+        entities: list[BinarySensorEntity] = []
         if device.device_type in DEVICE_TYPE_TO_CLASS:
             entities.append(YoLocalBinarySensor(coordinator, device))
-        # Add alarm state binary sensors for specific device types
+        # Add alarm state binary sensors for specific device types.
         if device.device_type == "THSensor":
             entities.append(
                 YoLocalTHAlarmSensor(
@@ -91,8 +91,39 @@ async def async_setup_entry(
             )
         elif device.device_type == "MotionSensor":
             entities.append(YoLocalMotionLEDSensor(coordinator, device))
+        return entities
 
-    async_add_entities(entities)
+    entities_by_device_id: dict[str, list[BinarySensorEntity]] = {}
+
+    def add_devices(devices) -> None:
+        new_entities: list[BinarySensorEntity] = []
+        for device in devices:
+            if device.device_id in entities_by_device_id:
+                continue
+            built = build_entities(device)
+            if not built:
+                continue
+            entities_by_device_id[device.device_id] = built
+            new_entities.extend(built)
+        if new_entities:
+            async_add_entities(new_entities)
+
+    async def remove_devices(device_ids: list[str]) -> None:
+        for device_id in device_ids:
+            for entity in entities_by_device_id.pop(device_id, []):
+                if isinstance(entity, YoLocalEntity):
+                    await entity.async_remove_from_hass()
+
+    def handle_registry_change(added_devices, removed_devices) -> None:
+        add_devices(added_devices)
+        removed_ids = [device.device_id for device in removed_devices]
+        if removed_ids:
+            hass.async_create_task(remove_devices(removed_ids))
+
+    entry.async_on_unload(
+        coordinator.register_device_registry_listener(handle_registry_change)
+    )
+    add_devices(coordinator.devices.values())
 
 
 class YoLocalBinarySensor(YoLocalEntity, BinarySensorEntity):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -65,6 +66,17 @@ class YoLocalEntity(CoordinatorEntity[YoLocalCoordinator]):
         if value is not None or not fallback:
             return value
         return self.device_state.get(key)
+
+    async def async_remove_from_hass(self) -> None:
+        """Remove this entity from HA, including its registry entry when present."""
+        entity_id = getattr(self, "entity_id", None)
+        if entity_id:
+            registry = er.async_get(self.coordinator.hass)
+            if registry.async_get(entity_id) is not None:
+                registry.async_remove(entity_id)
+                return
+        if hasattr(self, "async_remove"):
+            await self.async_remove()
 
     @property
     def available(self) -> bool:

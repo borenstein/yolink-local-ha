@@ -22,12 +22,42 @@ async def async_setup_entry(
     """Set up YoLink sirens from a config entry."""
     coordinator: YoLocalCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[SirenEntity] = []
-    for device in coordinator.devices.values():
-        if device.device_type == "Siren":
-            entities.append(YoLocalSiren(coordinator, device))
+    entities_by_device_id: dict[str, list[YoLocalSiren]] = {}
 
-    async_add_entities(entities)
+    def build_entities(device) -> list[YoLocalSiren]:
+        if device.device_type != "Siren":
+            return []
+        return [YoLocalSiren(coordinator, device)]
+
+    def add_devices(devices) -> None:
+        new_entities: list[YoLocalSiren] = []
+        for device in devices:
+            if device.device_id in entities_by_device_id:
+                continue
+            built = build_entities(device)
+            if not built:
+                continue
+            entities_by_device_id[device.device_id] = built
+            new_entities.extend(built)
+        if new_entities:
+            async_add_entities(new_entities)
+
+    async def remove_devices(device_ids: list[str]) -> None:
+        for device_id in device_ids:
+            for entity in entities_by_device_id.pop(device_id, []):
+                if isinstance(entity, YoLocalEntity):
+                    await entity.async_remove_from_hass()
+
+    def handle_registry_change(added_devices, removed_devices) -> None:
+        add_devices(added_devices)
+        removed_ids = [device.device_id for device in removed_devices]
+        if removed_ids:
+            hass.async_create_task(remove_devices(removed_ids))
+
+    entry.async_on_unload(
+        coordinator.register_device_registry_listener(handle_registry_change)
+    )
+    add_devices(coordinator.devices.values())
 
 
 class YoLocalSiren(YoLocalEntity, SirenEntity):
@@ -57,4 +87,3 @@ class YoLocalSiren(YoLocalEntity, SirenEntity):
             self._device.device_id,
             {"state": {"alarm": False}},
         )
-

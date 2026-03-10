@@ -6,7 +6,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import asyncio
 
+from homeassistant.helpers import device_registry as dr
+
 from custom_components.yolocal.api.device import Device
+from custom_components.yolocal.const import DOMAIN
 from custom_components.yolocal.coordinator import YoLocalCoordinator
 from custom_components.yolocal.entity import YoLocalEntity
 from custom_components.yolocal.sensor import YoLocalTHLimitSensor
@@ -42,7 +45,21 @@ def make_device(
 
 def make_coordinator() -> YoLocalCoordinator:
     """Create a coordinator with stub dependencies."""
-    hass = SimpleNamespace(async_create_task=lambda coro: SimpleNamespace(coro=coro))
+    scheduled_coroutines: list[object] = []
+
+    def async_create_task(coro):
+        scheduled_coroutines.append(coro)
+        return SimpleNamespace(coro=coro, done=lambda: False)
+
+    def async_create_background_task(coro, _name):
+        scheduled_coroutines.append(coro)
+        return SimpleNamespace(coro=coro, done=lambda: False)
+
+    hass = SimpleNamespace(
+        async_create_task=async_create_task,
+        async_create_background_task=async_create_background_task,
+        _scheduled_coroutines=scheduled_coroutines,
+    )
     token_manager = SimpleNamespace(client_id="client")
     client = SimpleNamespace(host="127.0.0.1")
     session = SimpleNamespace()
@@ -51,6 +68,7 @@ def make_coordinator() -> YoLocalCoordinator:
         client=client,
         token_manager=token_manager,
         session=session,
+        config_entry_id="entry",
         net_id="net",
     )
 
@@ -415,6 +433,213 @@ def test_async_setup_publishes_initial_data_to_coordinator() -> None:
         coordinator.data[device.device_id]["lastReportedAt"]
         == "2026-03-09T12:00:00+00:00"
     )
+    for coro in coordinator.hass._scheduled_coroutines:
+        coro.close()
+
+
+def test_async_setup_removes_stale_registry_devices() -> None:
+    """Startup should purge registry devices no longer present on the hub."""
+    coordinator = make_coordinator()
+    active = make_device(device_id=make_device_id("active"), device_type="DoorSensor")
+    stale_device_id = make_device_id("stale")
+
+    registry = dr.async_get(coordinator.hass)
+    registry.devices[frozenset({(DOMAIN, stale_device_id)})] = SimpleNamespace(
+        id="stale-device-id",
+        identifiers={(DOMAIN, stale_device_id)},
+        config_entry_id="entry",
+    )
+    from homeassistant.helpers import entity_registry as er
+
+    entity_registry = er.async_get(coordinator.hass)
+    entity_registry.entities["sensor.stale_battery"] = SimpleNamespace(
+        entity_id="sensor.stale_battery",
+        unique_id=f"{stale_device_id}_battery",
+        config_entry_id="entry",
+    )
+    entity_registry.entities["binary_sensor.stale_sensor"] = SimpleNamespace(
+        entity_id="binary_sensor.stale_sensor",
+        unique_id=stale_device_id,
+        config_entry_id="entry",
+    )
+
+    async def get_devices() -> list[Device]:
+        return [active]
+
+    async def get_state(_device: Device) -> dict[str, object]:
+        return {
+            "reportAt": "2026-03-09T12:00:00+00:00",
+            "state": {"battery": 4, "state": "closed"},
+        }
+
+    async def connect_mqtt() -> None:
+        return None
+
+    coordinator._client = SimpleNamespace(
+        get_devices=get_devices,
+        get_state=get_state,
+        host="127.0.0.1",
+    )
+    coordinator._connect_mqtt = connect_mqtt
+
+    asyncio.run(coordinator._async_setup())
+
+    assert registry.async_get_device(identifiers={(DOMAIN, stale_device_id)}) is None
+    assert entity_registry.async_get("sensor.stale_battery") is None
+    assert entity_registry.async_get("binary_sensor.stale_sensor") is None
+    for coro in coordinator.hass._scheduled_coroutines:
+        coro.close()
+
+
+def test_async_refresh_devices_notifies_listeners_for_new_device() -> None:
+    """Device additions should notify listeners and seed initial state."""
+    listener_calls: list[tuple[list[str], list[str]]] = []
+
+    coordinator = make_coordinator()
+    existing = make_device(device_id=make_device_id("existing"), device_type="DoorSensor")
+    added = make_device(device_id=make_device_id("added"), device_type="DoorSensor")
+    coordinator._devices = {existing.device_id: existing}
+    coordinator._states[existing.device_id] = {"state": {"battery": 1}}
+    coordinator.register_device_registry_listener(
+        lambda added_devices, removed_devices: listener_calls.append(
+            (
+                [device.device_id for device in added_devices],
+                [device.device_id for device in removed_devices],
+            )
+        )
+    )
+
+    async def get_devices() -> list[Device]:
+        return [existing, added]
+
+    async def get_state(device: Device) -> dict[str, object]:
+        if device.device_id == added.device_id:
+            return {
+                "reportAt": "2026-03-09T12:00:00+00:00",
+                "state": {"battery": 4, "state": "closed"},
+            }
+        raise AssertionError("unexpected get_state call")
+
+    coordinator._client = SimpleNamespace(
+        get_devices=get_devices,
+        get_state=get_state,
+        host="127.0.0.1",
+    )
+
+    refreshed = asyncio.run(coordinator._async_refresh_devices())
+
+    assert refreshed is True
+    assert coordinator._states[existing.device_id]["state"]["battery"] == 1
+    assert coordinator._states[added.device_id]["state"]["battery"] == 4
+    assert set(coordinator._devices) == {existing.device_id, added.device_id}
+    assert listener_calls == [([added.device_id], [])]
+
+
+def test_async_refresh_devices_notifies_listeners_for_removed_device() -> None:
+    """Device removals should notify listeners and drop stale cached state."""
+    listener_calls: list[tuple[list[str], list[str]]] = []
+
+    coordinator = make_coordinator()
+    kept = make_device(device_id=make_device_id("kept"), device_type="DoorSensor")
+    removed = make_device(device_id=make_device_id("removed"), device_type="DoorSensor")
+    coordinator._devices = {
+        kept.device_id: kept,
+        removed.device_id: removed,
+    }
+    coordinator._states[kept.device_id] = {"state": {"battery": 1}}
+    coordinator._states[removed.device_id] = {"state": {"battery": 4}}
+    coordinator.register_device_registry_listener(
+        lambda added_devices, removed_devices: listener_calls.append(
+            (
+                [device.device_id for device in added_devices],
+                [device.device_id for device in removed_devices],
+            )
+        )
+    )
+
+    async def get_devices() -> list[Device]:
+        return [kept]
+
+    coordinator._client = SimpleNamespace(
+        get_devices=get_devices,
+        get_state=None,
+        host="127.0.0.1",
+    )
+
+    refreshed = asyncio.run(coordinator._async_refresh_devices())
+
+    assert refreshed is True
+    assert removed.device_id not in coordinator._states
+    assert set(coordinator._devices) == {kept.device_id}
+    assert listener_calls == [([], [removed.device_id])]
+
+
+def test_async_refresh_devices_removes_device_registry_entry() -> None:
+    """Removed devices should be deleted from the HA device registry."""
+    coordinator = make_coordinator()
+    kept = make_device(device_id=make_device_id("kept-reg"), device_type="DoorSensor")
+    removed = make_device(
+        device_id=make_device_id("removed-reg"),
+        device_type="DoorSensor",
+    )
+    coordinator._devices = {
+        kept.device_id: kept,
+        removed.device_id: removed,
+    }
+
+    registry = dr.async_get(coordinator.hass)
+    removed_identifiers = frozenset({(DOMAIN, removed.device_id)})
+    registry.devices[removed_identifiers] = SimpleNamespace(
+        id="device-registry-id",
+        identifiers={(DOMAIN, removed.device_id)},
+        config_entry_id="entry",
+    )
+
+    async def get_devices() -> list[Device]:
+        return [kept]
+
+    coordinator._client = SimpleNamespace(
+        get_devices=get_devices,
+        get_state=None,
+        host="127.0.0.1",
+    )
+
+    refreshed = asyncio.run(coordinator._async_refresh_devices())
+
+    assert refreshed is True
+    assert registry.async_get_device(identifiers={(DOMAIN, removed.device_id)}) is None
+
+
+def test_device_discovery_loop_keeps_running_after_change() -> None:
+    """Discovery loop should keep polling after a membership change."""
+    coordinator = make_coordinator()
+    sleep_calls: list[float] = []
+    refresh_results = iter([True, False, RuntimeError("stop")])
+    refresh_calls: list[str] = []
+
+    async def fake_sleep(interval: float) -> None:
+        sleep_calls.append(interval)
+
+    async def fake_refresh_devices() -> bool:
+        refresh_calls.append("called")
+        result = next(refresh_results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    original_sleep = asyncio.sleep
+    coordinator._async_refresh_devices = fake_refresh_devices
+    asyncio.sleep = fake_sleep
+    try:
+        try:
+            asyncio.run(coordinator._async_device_discovery_loop())
+        except RuntimeError as exc:
+            assert str(exc) == "stop"
+    finally:
+        asyncio.sleep = original_sleep
+
+    assert len(refresh_calls) == 3
+    assert len(sleep_calls) == 3
 
 
 def test_device_from_api_preserves_motion_sensor_type_for_7805() -> None:

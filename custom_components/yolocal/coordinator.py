@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 import aiohttp
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -19,10 +22,11 @@ from .api import (
     YoLinkClient,
     YoLinkMQTTClient,
 )
-from .const import STATE_REFRESH_INTERVAL
+from .const import DEVICE_DISCOVERY_INTERVAL, DOMAIN, STATE_REFRESH_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 RECENT_REPORT_THRESHOLD_SECONDS = 10 * 60
+type DeviceRegistryListener = Callable[[list[Device], list[Device]], None]
 
 
 class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -38,6 +42,7 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         client: YoLinkClient,
         token_manager: TokenManager,
         session: aiohttp.ClientSession,
+        config_entry_id: str,
         net_id: str,
         mqtt_port: int = 18080,
     ) -> None:
@@ -51,12 +56,15 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         self._client = client
         self._token_manager = token_manager
         self._session = session
+        self._config_entry_id = config_entry_id
         self._net_id = net_id
         self._mqtt_port = mqtt_port
         self._mqtt_client: YoLinkMQTTClient | None = None
         self._devices: dict[str, Device] = {}
         self._states: dict[str, dict[str, Any]] = {}
         self._reconnect_task: asyncio.Task[None] | None = None
+        self._discovery_task: asyncio.Task[None] | None = None
+        self._device_registry_listeners: list[DeviceRegistryListener] = []
         self._shutdown = False
 
     @property
@@ -64,10 +72,33 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         """Return the device registry."""
         return self._devices
 
+    def register_device_registry_listener(
+        self, listener: DeviceRegistryListener
+    ) -> Callable[[], None]:
+        """Subscribe to device registry changes."""
+        self._device_registry_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            if listener in self._device_registry_listeners:
+                self._device_registry_listeners.remove(listener)
+
+        return unsubscribe
+
+    def _create_background_task(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        name: str,
+    ) -> asyncio.Task[None] | Any:
+        """Create a background task without blocking HA startup."""
+        if hasattr(self.hass, "async_create_background_task"):
+            return self.hass.async_create_background_task(coro, name)
+        return self.hass.async_create_task(coro)
+
     async def _async_setup(self) -> None:
         """Set up the coordinator: fetch devices and connect MQTT."""
         devices = await self._client.get_devices()
         self._devices = {d.device_id: d for d in devices}
+        self._remove_stale_registry_devices(set(self._devices))
 
         for device in devices:
             try:
@@ -91,6 +122,12 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             )
             self._on_mqtt_disconnect()
 
+        if self._discovery_task is None:
+            self._discovery_task = self._create_background_task(
+                self._async_device_discovery_loop(),
+                "yolocal_device_discovery",
+            )
+
         # Publish initial state through the coordinator so HA can treat this
         # instance as having current data and schedule future refreshes.
         self.async_set_updated_data(self._states.copy())
@@ -98,6 +135,9 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     async def async_shutdown(self) -> None:
         """Shut down the coordinator."""
         self._shutdown = True
+        if self._discovery_task:
+            self._discovery_task.cancel()
+            self._discovery_task = None
         if self._reconnect_task:
             self._reconnect_task.cancel()
             self._reconnect_task = None
@@ -368,6 +408,112 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         self._states = refreshed_states
         return refreshed_states.copy()
 
+    async def _async_device_discovery_loop(self) -> None:
+        """Periodically check for device additions/removals."""
+        interval = DEVICE_DISCOVERY_INTERVAL.total_seconds()
+        while not self._shutdown:
+            await asyncio.sleep(interval)
+            await self._async_refresh_devices()
+
+    async def _async_refresh_devices(self) -> bool:
+        """Refresh the device registry and notify listeners if membership changed."""
+        try:
+            devices = await self._client.get_devices()
+        except Exception:
+            _LOGGER.warning("Failed to refresh device list", exc_info=True)
+            return False
+
+        new_devices = {device.device_id: device for device in devices}
+        if set(new_devices) == set(self._devices):
+            self._devices = new_devices
+            return False
+
+        existing_device_ids = set(self._devices)
+        added_ids = sorted(set(new_devices) - existing_device_ids)
+        removed_ids = sorted(existing_device_ids - set(new_devices))
+        added_devices = [new_devices[device_id] for device_id in added_ids]
+        removed_devices = [self._devices[device_id] for device_id in removed_ids]
+        _LOGGER.info(
+            "Device registry changed; added=%s removed=%s.",
+            added_ids,
+            removed_ids,
+        )
+        self._devices = new_devices
+
+        for device_id in removed_ids:
+            self._states.pop(device_id, None)
+            self._remove_device_from_registry(device_id)
+
+        for device in added_devices:
+            try:
+                state = await self._client.get_state(device)
+                state = self._sanitize_state_payload(state)
+                if state.get("reportAt") and "lastReportedAt" not in state:
+                    state["lastReportedAt"] = state["reportAt"]
+                self._states[device.device_id] = state
+            except Exception:
+                _LOGGER.warning("Failed to get initial state for %s", device.name)
+                self._states[device.device_id] = {}
+
+        for listener in list(self._device_registry_listeners):
+            try:
+                listener(added_devices, removed_devices)
+            except Exception:
+                _LOGGER.exception("Device registry listener failed")
+
+        self.async_set_updated_data(self._states.copy())
+
+        return True
+
+    def _remove_device_from_registry(self, device_id: str) -> None:
+        """Remove a deleted device from the HA device registry."""
+        self._remove_entity_registry_entries(device_id)
+        registry = dr.async_get(self.hass)
+        device_entry = registry.async_get_device(identifiers={(DOMAIN, device_id)})
+        if device_entry is not None:
+            registry.async_remove_device(device_entry.id)
+
+    def _remove_stale_registry_devices(self, active_device_ids: set[str]) -> None:
+        """Remove registry devices that no longer exist on the hub."""
+        registry = dr.async_get(self.hass)
+        if hasattr(dr, "async_entries_for_config_entry"):
+            device_entries = dr.async_entries_for_config_entry(
+                registry,
+                self._config_entry_id,
+            )
+        else:
+            device_entries = list(getattr(registry, "devices", {}).values())
+
+        for entry in list(device_entries):
+            normalized_identifiers = set(getattr(entry, "identifiers", set()))
+            if len(normalized_identifiers) != 1:
+                continue
+            domain, device_id = next(iter(normalized_identifiers))
+            if domain != DOMAIN or device_id in active_device_ids:
+                continue
+            self._remove_entity_registry_entries(device_id)
+            registry.async_remove_device(entry.id)
+
+    def _remove_entity_registry_entries(self, device_id: str) -> None:
+        """Remove orphaned entity-registry entries for a missing device."""
+        registry = er.async_get(self.hass)
+        if hasattr(er, "async_entries_for_config_entry"):
+            entity_entries = er.async_entries_for_config_entry(
+                registry,
+                self._config_entry_id,
+            )
+        else:
+            entity_entries = list(getattr(registry, "entities", {}).values())
+
+        for entry in list(entity_entries):
+            entity_id = getattr(entry, "entity_id", None)
+            unique_id = getattr(entry, "unique_id", None)
+            if unique_id == device_id or (
+                isinstance(unique_id, str) and unique_id.startswith(f"{device_id}_")
+            ):
+                if entity_id is not None:
+                    registry.async_remove(entity_id)
+
     def get_state(self, device_id: str) -> dict[str, Any]:
         """Get the current state for a device."""
         return self._states.get(device_id, {})
@@ -387,6 +533,7 @@ async def create_coordinator(
     host: str,
     client_id: str,
     client_secret: str,
+    config_entry_id: str,
     net_id: str,
     http_port: int = 1080,
     mqtt_port: int = 18080,
@@ -407,7 +554,7 @@ async def create_coordinator(
         client = YoLinkClient(host, token_manager, session, http_port)
 
         coordinator = YoLocalCoordinator(
-            hass, client, token_manager, session, net_id, mqtt_port
+            hass, client, token_manager, session, config_entry_id, net_id, mqtt_port
         )
         await coordinator._async_setup()
 

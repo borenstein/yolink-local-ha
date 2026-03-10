@@ -26,6 +26,9 @@ def _install_homeassistant_stubs() -> None:
         def async_create_task(self, coro):
             return SimpleNamespace(coro=coro, done=lambda: False)
 
+        def async_create_background_task(self, coro, _name):
+            return SimpleNamespace(coro=coro, done=lambda: False)
+
     def callback(func):
         return func
 
@@ -40,6 +43,11 @@ def _install_homeassistant_stubs() -> None:
         def __init__(self) -> None:
             self.entry_id = "entry"
             self.data = {}
+            self._unload_callbacks = []
+
+        def async_on_unload(self, callback):
+            self._unload_callbacks.append(callback)
+            return callback
 
     config_entries.ConfigEntry = ConfigEntry
 
@@ -99,7 +107,60 @@ def _install_homeassistant_stubs() -> None:
         model: str
         serial_number: str
 
+    class DeviceRegistry:
+        def __init__(self) -> None:
+            self.devices: dict[frozenset[tuple[str, str]], SimpleNamespace] = {}
+
+        def async_get_device(self, identifiers=None, **_kwargs):
+            return self.devices.get(frozenset(identifiers or set()))
+
+        def async_remove_device(self, device_id):
+            for identifiers, entry in list(self.devices.items()):
+                if entry.id == device_id:
+                    self.devices.pop(identifiers, None)
+
+    _device_registry = DeviceRegistry()
+
+    def async_get(_hass):
+        return _device_registry
+
+    def async_entries_for_config_entry(_registry, config_entry_id):
+        return [
+            entry
+            for entry in _device_registry.devices.values()
+            if getattr(entry, "config_entry_id", None) == config_entry_id
+        ]
+
     device_registry.DeviceInfo = DeviceInfo
+    device_registry.async_get = async_get
+    device_registry.async_entries_for_config_entry = async_entries_for_config_entry
+
+    entity_registry = ModuleType("homeassistant.helpers.entity_registry")
+
+    class EntityRegistry:
+        def __init__(self) -> None:
+            self.entities: dict[str, SimpleNamespace] = {}
+
+        def async_get(self, entity_id):
+            return self.entities.get(entity_id)
+
+        def async_remove(self, entity_id):
+            self.entities.pop(entity_id, None)
+
+    _entity_registry = EntityRegistry()
+
+    def async_get_entity_registry(_hass):
+        return _entity_registry
+
+    def async_entries_for_config_entry(_registry, config_entry_id):
+        return [
+            entry
+            for entry in _entity_registry.entities.values()
+            if getattr(entry, "config_entry_id", None) == config_entry_id
+        ]
+
+    entity_registry.async_get = async_get_entity_registry
+    entity_registry.async_entries_for_config_entry = async_entries_for_config_entry
 
     util = ModuleType("homeassistant.util")
     dt = ModuleType("homeassistant.util.dt")
@@ -119,7 +180,8 @@ def _install_homeassistant_stubs() -> None:
     sensor = ModuleType("homeassistant.components.sensor")
 
     class SensorEntity:
-        pass
+        async def async_remove(self) -> None:
+            return None
 
     class SensorDeviceClass:
         BATTERY = "battery"
@@ -137,7 +199,8 @@ def _install_homeassistant_stubs() -> None:
     binary_sensor = ModuleType("homeassistant.components.binary_sensor")
 
     class BinarySensorEntity:
-        pass
+        async def async_remove(self) -> None:
+            return None
 
     class BinarySensorDeviceClass:
         DOOR = "door"
@@ -172,6 +235,7 @@ def _install_homeassistant_stubs() -> None:
     sys.modules["homeassistant.helpers.entity_platform"] = entity_platform
     sys.modules["homeassistant.helpers.entity"] = entity
     sys.modules["homeassistant.helpers.device_registry"] = device_registry
+    sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
     sys.modules["homeassistant.util"] = util
     sys.modules["homeassistant.util.dt"] = dt
     sys.modules["homeassistant.components"] = components

@@ -32,6 +32,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             host=entry.data[CONF_HUB_IP],
             client_id=entry.data[CONF_CLIENT_ID],
             client_secret=entry.data[CONF_CLIENT_SECRET],
+            config_entry_id=entry.entry_id,
             net_id=entry.data[CONF_NET_ID],
             http_port=DEFAULT_HTTP_PORT,
             mqtt_port=DEFAULT_MQTT_PORT,
