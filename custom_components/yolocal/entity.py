@@ -52,6 +52,21 @@ class YoLocalEntity(CoordinatorEntity[YoLocalCoordinator]):
         return self.coordinator.get_state(self._device.device_id)
 
     @property
+    def nested_device_state(self) -> dict[str, Any]:
+        """Return the nested `state` object when available."""
+        state = self.device_state.get("state")
+        if isinstance(state, dict):
+            return state
+        return {}
+
+    def state_value(self, key: str, fallback: bool = False) -> Any:
+        """Return a nested state value, optionally falling back to top-level state."""
+        value = self.nested_device_state.get(key)
+        if value is not None or not fallback:
+            return value
+        return self.device_state.get(key)
+
+    @property
     def available(self) -> bool:
         """Return True if entity is available."""
         # First check if coordinator is available

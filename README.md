@@ -54,6 +54,7 @@ The following device type/model combinations were tested:
 | DoorSensor   | YS7704-UC |
 | LeakSensor   | YS7903-UC |
 | MotionSensor | YS7804-UC |
+| MotionSensor | YS7805-UC |
 | THSensor     | YS8003-UC |
 | TempSensor   | YS8004-UC |
 | TiltSensor   | YS7706-UC |
@@ -165,7 +166,7 @@ Required connection/auth:
 
 Required device serials for full live type test coverage:
 
-- `YOLINK_MOTION_7804_SERIAL`
+- `YOLINK_MOTION_7804_SERIAL` or `YOLINK_MOTION_7805_SERIAL`
 - `YOLINK_TH_8003_SERIAL`
 - `YOLINK_DOOR_7704_SERIAL`
 - `YOLINK_LEAK_7903_SERIAL`
@@ -185,7 +186,7 @@ export YOLINK_NET=
 export YOLINK_CLIENT_ID="..."
 export YOLINK_CLIENT_SECRET="..."
 
-export YOLINK_MOTION_7804_SERIAL=
+export YOLINK_MOTION_7805_SERIAL=
 export YOLINK_TH_8003_SERIAL=
 export YOLINK_DOOR_7704_SERIAL=
 export YOLINK_LEAK_7903_SERIAL=

@@ -137,7 +137,9 @@ def get_device_defaults(kind: str) -> tuple[str, str]:
         )
     if kind == "motion":
         return (
-            os.getenv("YOLINK_MOTION_7804_SERIAL") or "",
+            os.getenv("YOLINK_MOTION_7805_SERIAL")
+            or os.getenv("YOLINK_MOTION_7804_SERIAL")
+            or "",
             os.getenv("YOLINK_MOTION_DEVICE_NAME", "entrance"),
         )
     if kind == "door":

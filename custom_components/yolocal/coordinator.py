@@ -18,7 +18,6 @@ from .api import (
     YoLinkClient,
     YoLinkMQTTClient,
 )
-from .api.auth import AuthenticationError
 from .const import STATE_REFRESH_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,6 +70,7 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         for device in devices:
             try:
                 state = await self._client.get_state(device)
+                state = self._sanitize_state_payload(state)
                 # HTTP `getState` uses `reportAt`; store a normalized internal field
                 # that later MQTT `time` updates can overwrite consistently.
                 if state.get("reportAt") and "lastReportedAt" not in state:
@@ -123,7 +123,10 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             try:
                 await mqtt_client.disconnect()
             except Exception:
-                _LOGGER.debug("Error while cleaning up failed MQTT client", exc_info=True)
+                _LOGGER.debug(
+                    "Error while cleaning up failed MQTT client",
+                    exc_info=True,
+                )
             _LOGGER.exception("Failed to connect to MQTT broker")
             raise
 
@@ -136,63 +139,115 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             _LOGGER.debug("Ignoring event for unknown device: %s", device_id)
             return
 
-        # TH/Temp: merge MQTT report into existing API state so partial reports do
-        # not drop diagnostic fields (e.g. firmware/version).
+        event_data = event.data if isinstance(event.data, dict) else {}
         if device.device_type == "THSensor":
-            existing_state = self._states.get(device_id, {})
-            event_data = event.data if isinstance(event.data, dict) else {}
-
-            new_state = {**existing_state, **event_data}
-
-            merged_state_obj: dict[str, Any] = {}
-            if isinstance(existing_state.get("state"), dict):
-                merged_state_obj.update(existing_state["state"])
-
-            event_state_obj = event_data.get("state")
-            if isinstance(event_state_obj, dict):
-                merged_state_obj.update(event_state_obj)
-            elif event_state_obj is not None:
-                merged_state_obj["state"] = event_state_obj
-
-            # TH reports often publish flat keys at top-level (temperature, humidity, mode...)
-            # Fold them into nested state while keeping top-level copies for fallback readers.
-            for key, value in event_data.items():
-                if key in {"state", "online", "reportAt", "lastReportedAt"}:
-                    continue
-                if value is None and key in {"temperature", "humidity", "mode", "version"}:
-                    continue
-                merged_state_obj[key] = value
-
-            if merged_state_obj:
-                new_state["state"] = merged_state_obj
-
-            self._states[device_id] = new_state
-            self.async_set_updated_data(self._states.copy())
+            self._update_device_state(
+                device_id,
+                self._merge_thsensor_state(device_id, event_data),
+            )
             return
 
-        # Deep merge event data with existing state to preserve diagnostic info
-        existing_state = self._states.get(device_id, {})
-        new_state = {**existing_state, **event.data}
+        self._update_device_state(
+            device_id,
+            self._merge_device_state(device_id, event_data),
+        )
 
-        # Merge nested "state" object if present in both
-        # Handle both formats: state as dict {"state": {...}} or flat {"state": "alert"}
-        if "state" in existing_state and "state" in event.data:
-            existing_state_obj = existing_state["state"]
-            event_state_obj = event.data["state"]
-
-            # Both are dicts - merge them
-            if isinstance(existing_state_obj, dict) and isinstance(event_state_obj, dict):
-                new_state["state"] = {**existing_state_obj, **event_state_obj}
-            # Event has dict, existing has string - use event's dict
-            elif isinstance(event_state_obj, dict):
-                new_state["state"] = event_state_obj
-            # Event has string, existing has dict - update the nested "state" field
-            elif isinstance(existing_state_obj, dict):
-                new_state["state"] = {**existing_state_obj, "state": event_state_obj}
-            # Both are strings - just use the event's value (already in new_state)
-
-        self._states[device_id] = new_state
+    def _update_device_state(self, device_id: str, state: dict[str, Any]) -> None:
+        """Store updated device state and notify listeners."""
+        self._states[device_id] = state
         self.async_set_updated_data(self._states.copy())
+
+    def _merge_device_state(
+        self, device_id: str, event_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge event data into cached state for non-TH devices."""
+        existing_state = self._states.get(device_id, {})
+        new_state = self._sanitize_state_payload({**existing_state, **event_data})
+
+        merged_nested_state = self._merge_nested_state(
+            existing_state.get("state"),
+            event_data.get("state"),
+        )
+        if merged_nested_state is not None:
+            new_state["state"] = self._sanitize_nested_state(merged_nested_state)
+
+        return new_state
+
+    def _merge_thsensor_state(
+        self, device_id: str, event_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge TH sensor events while preserving API-only diagnostic fields."""
+        existing_state = self._states.get(device_id, {})
+        new_state = self._sanitize_state_payload({**existing_state, **event_data})
+
+        merged_state_obj = self._build_thsensor_nested_state(existing_state, event_data)
+        if merged_state_obj:
+            new_state["state"] = self._sanitize_nested_state(merged_state_obj)
+
+        return new_state
+
+    def _build_thsensor_nested_state(
+        self,
+        existing_state: dict[str, Any],
+        event_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the nested TH sensor state object from cached and event data."""
+        merged_state_obj: dict[str, Any] = {}
+
+        existing_nested_state = existing_state.get("state")
+        if isinstance(existing_nested_state, dict):
+            merged_state_obj.update(existing_nested_state)
+
+        merged_nested_state = self._merge_nested_state(
+            existing_nested_state,
+            event_data.get("state"),
+        )
+        if isinstance(merged_nested_state, dict):
+            merged_state_obj.update(merged_nested_state)
+        elif merged_nested_state is not None:
+            merged_state_obj["state"] = merged_nested_state
+
+        # TH reports often publish flat keys at top-level (temperature, humidity, mode...)
+        # Fold them into nested state while keeping top-level copies for fallback readers.
+        for key, value in event_data.items():
+            if key in {"state", "online", "reportAt", "lastReportedAt"}:
+                continue
+            if value is None and key in {"temperature", "humidity", "mode", "version"}:
+                continue
+            merged_state_obj[key] = value
+
+        return merged_state_obj
+
+    def _sanitize_state_payload(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Remove inaccurate fields from a state payload."""
+        sanitized = dict(state)
+        sanitized.pop("batteryType", None)
+        nested_state = sanitized.get("state")
+        if isinstance(nested_state, dict):
+            sanitized["state"] = self._sanitize_nested_state(nested_state)
+        return sanitized
+
+    def _sanitize_nested_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Remove inaccurate fields from a nested state object."""
+        sanitized = dict(state)
+        sanitized.pop("batteryType", None)
+        return sanitized
+
+    def _merge_nested_state(
+        self,
+        existing_state: Any,
+        event_state: Any,
+    ) -> Any | None:
+        """Merge the payload's nested `state` field while preserving prior details."""
+        if event_state is None:
+            return None
+        if isinstance(event_state, dict):
+            if isinstance(existing_state, dict):
+                return {**existing_state, **event_state}
+            return event_state
+        if isinstance(existing_state, dict):
+            return {**existing_state, "state": event_state}
+        return event_state
 
     @callback
     def _on_mqtt_disconnect(self) -> None:

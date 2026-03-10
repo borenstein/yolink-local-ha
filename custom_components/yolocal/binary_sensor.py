@@ -45,16 +45,50 @@ async def async_setup_entry(
             entities.append(YoLocalBinarySensor(coordinator, device))
         # Add alarm state binary sensors for specific device types
         if device.device_type == "THSensor":
-            entities.append(YoLocalTHAlarmSensor(coordinator, device, "lowTemp", "Low temperature"))
-            entities.append(YoLocalTHAlarmSensor(coordinator, device, "highTemp", "High temperature"))
-            entities.append(YoLocalTHAlarmSensor(coordinator, device, "lowHumidity", "Low humidity"))
-            entities.append(YoLocalTHAlarmSensor(coordinator, device, "highHumidity", "High humidity"))
-            entities.append(YoLocalTHAlarmSensor(coordinator, device, "lowBattery", "Low battery"))
+            entities.append(
+                YoLocalTHAlarmSensor(
+                    coordinator, device, "lowTemp", "Low temperature"
+                )
+            )
+            entities.append(
+                YoLocalTHAlarmSensor(
+                    coordinator, device, "highTemp", "High temperature"
+                )
+            )
+            entities.append(
+                YoLocalTHAlarmSensor(
+                    coordinator, device, "lowHumidity", "Low humidity"
+                )
+            )
+            entities.append(
+                YoLocalTHAlarmSensor(
+                    coordinator, device, "highHumidity", "High humidity"
+                )
+            )
+            entities.append(
+                YoLocalTHAlarmSensor(
+                    coordinator, device, "lowBattery", "Low battery"
+                )
+            )
         elif device.device_type == "LeakSensor":
-            entities.append(YoLocalLeakAlarmSensor(coordinator, device, "detectorError", "Detector error"))
-            entities.append(YoLocalLeakAlarmSensor(coordinator, device, "freezeError", "Freeze error"))
-            entities.append(YoLocalLeakAlarmSensor(coordinator, device, "stayError", "Stay error"))
-            entities.append(YoLocalLeakAlarmSensor(coordinator, device, "reminder", "Reminder"))
+            entities.append(
+                YoLocalLeakAlarmSensor(
+                    coordinator, device, "detectorError", "Detector error"
+                )
+            )
+            entities.append(
+                YoLocalLeakAlarmSensor(
+                    coordinator, device, "freezeError", "Freeze error"
+                )
+            )
+            entities.append(
+                YoLocalLeakAlarmSensor(
+                    coordinator, device, "stayError", "Stay error"
+                )
+            )
+            entities.append(
+                YoLocalLeakAlarmSensor(coordinator, device, "reminder", "Reminder")
+            )
         elif device.device_type == "MotionSensor":
             entities.append(YoLocalMotionLEDSensor(coordinator, device))
 
@@ -75,11 +109,9 @@ class YoLocalBinarySensor(YoLocalEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if the sensor is triggered."""
-        state = self.device_state.get("state", {})
-        if isinstance(state, dict):
-            sensor_state = state.get("state")
-        else:
-            sensor_state = state
+        sensor_state = self.state_value("state")
+        if sensor_state is None:
+            sensor_state = self.device_state.get("state")
 
         if sensor_state is None:
             return None
@@ -92,20 +124,18 @@ class YoLocalBinarySensor(YoLocalEntity, BinarySensorEntity):
         # Device identification
         attrs["device_id"] = self._device.device_id
         attrs["device_model"] = self._device.device_type
-        state = self.device_state.get("state", {})
-        if isinstance(state, dict):
-            # Battery level (0-4, convert to percentage)
-            if "battery" in state:
-                battery_level = state.get("battery")
-                if battery_level is not None:
-                    attrs["battery_level"] = min(battery_level * 25, 100)
-                    attrs["battery_raw"] = battery_level
-            # Device temperature if available
-            if "devTemperature" in state:
-                attrs["device_temperature"] = state.get("devTemperature")
-            # Firmware version
-            if "version" in state:
-                attrs["firmware_version"] = state.get("version")
+        state = self.nested_device_state
+        # Battery level (0-4, convert to percentage)
+        battery_level = state.get("battery")
+        if battery_level is not None:
+            attrs["battery_level"] = min(battery_level * 25, 100)
+            attrs["battery_raw"] = battery_level
+        # Device temperature if available
+        if "devTemperature" in state:
+            attrs["device_temperature"] = state.get("devTemperature")
+        # Firmware version
+        if "version" in state:
+            attrs["firmware_version"] = state.get("version")
         return attrs
 
 
@@ -119,7 +149,13 @@ class YoLocalTHAlarmSensor(YoLocalEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: YoLocalCoordinator, device, alarm_type: str, alarm_name: str) -> None:
+    def __init__(
+        self,
+        coordinator: YoLocalCoordinator,
+        device,
+        alarm_type: str,
+        alarm_name: str,
+    ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, device)
         self._alarm_type = alarm_type
@@ -129,11 +165,9 @@ class YoLocalTHAlarmSensor(YoLocalEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if the alarm is triggered."""
-        state = self.device_state.get("state", {})
-        if isinstance(state, dict):
-            alarm = state.get("alarm", {})
-            if isinstance(alarm, dict):
-                return alarm.get(self._alarm_type, False)
+        alarm = self.state_value("alarm")
+        if isinstance(alarm, dict):
+            return alarm.get(self._alarm_type, False)
         return None
 
 
@@ -147,7 +181,13 @@ class YoLocalLeakAlarmSensor(YoLocalEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: YoLocalCoordinator, device, alarm_type: str, alarm_name: str) -> None:
+    def __init__(
+        self,
+        coordinator: YoLocalCoordinator,
+        device,
+        alarm_type: str,
+        alarm_name: str,
+    ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, device)
         self._alarm_type = alarm_type
@@ -157,11 +197,9 @@ class YoLocalLeakAlarmSensor(YoLocalEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if the alarm is triggered."""
-        state = self.device_state.get("state", {})
-        if isinstance(state, dict):
-            alarm_state = state.get("alarmState", {})
-            if isinstance(alarm_state, dict):
-                return alarm_state.get(self._alarm_type, False)
+        alarm_state = self.state_value("alarmState")
+        if isinstance(alarm_state, dict):
+            return alarm_state.get(self._alarm_type, False)
         return None
 
 
@@ -183,8 +221,4 @@ class YoLocalMotionLEDSensor(YoLocalEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if LED alarm is enabled."""
-        state = self.device_state.get("state", {})
-        if isinstance(state, dict):
-            return state.get("ledAlarm")
-        return None
-
+        return self.state_value("ledAlarm")
