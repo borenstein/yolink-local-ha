@@ -18,11 +18,13 @@ from .entity import YoLocalEntity
 DEVICE_TYPE_TO_CLASS = {
     "DoorSensor": BinarySensorDeviceClass.DOOR,
     "LeakSensor": BinarySensorDeviceClass.MOISTURE,
+    "MotionSensor": BinarySensorDeviceClass.MOTION,
 }
 
 DEVICE_TYPE_TO_ON_STATE = {
     "DoorSensor": "open",
     "LeakSensor": "alert",
+    "MotionSensor": "alert",
 }
 
 
@@ -43,7 +45,7 @@ async def async_setup_entry(
 
 
 class YoLocalBinarySensor(YoLocalEntity, BinarySensorEntity):
-    """Binary sensor for YoLink door/leak sensors."""
+    """Binary sensor for YoLink door/leak/motion sensors."""
 
     _attr_name = None  # Use device name
 

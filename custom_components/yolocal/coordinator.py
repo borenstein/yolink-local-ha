@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -10,7 +9,8 @@ from typing import Any
 import aiohttp
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import (
     Device,
@@ -19,12 +19,38 @@ from .api import (
     YoLinkClient,
     YoLinkMQTTClient,
 )
-from .api.auth import AuthenticationError
 
 _LOGGER = logging.getLogger(__name__)
 
 # Polling interval as fallback when MQTT events are missed
 UPDATE_INTERVAL = timedelta(minutes=5)
+
+# A device is offline if it hasn't reported within this window. Battery
+# devices heartbeat only every ~4 hours, so this allows two missed
+# heartbeats plus margin (same value as YOLINK_OFFLINE_TIME in HA core's
+# cloud yolink integration).
+OFFLINE_TIME = timedelta(seconds=32400)
+
+
+def _merge_device_state(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge an MQTT event payload into the cached device state.
+
+    Keys merge shallowly with incoming values winning. Special case: when the
+    cached ``state`` is a nested dict but the event carries a flat scalar
+    ``state`` (e.g. ``MotionSensor.Alert`` sends ``{"state": "alert"}`` while
+    ``getState`` reports ``{"state": {"state": ..., "battery": ...}}``), fold
+    the scalar into the existing dict so sibling fields such as ``battery`` and
+    ``devTemperature`` are preserved instead of clobbered.
+    """
+    if isinstance(existing.get("state"), dict) and isinstance(incoming.get("state"), str):
+        return {
+            **existing,
+            **incoming,
+            "state": {**existing["state"], "state": incoming["state"]},
+        }
+    return {**existing, **incoming}
 
 
 class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -59,6 +85,7 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         self._mqtt_client: YoLinkMQTTClient | None = None
         self._devices: dict[str, Device] = {}
         self._states: dict[str, dict[str, Any]] = {}
+        self._online: dict[str, bool] = {}
 
     @property
     def devices(self) -> dict[str, Device]:
@@ -74,14 +101,50 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         await self._connect_mqtt()
 
     async def _fetch_all_states(self) -> None:
-        """Fetch current state for all devices via HTTP API."""
+        """Fetch current state for all devices via HTTP API.
+
+        A single device failing is tolerated (sleepy devices can miss a
+        poll), but if every device fails the hub itself is unreachable and
+        UpdateFailed is raised so entities go unavailable.
+        """
+        failures = 0
         for device in self._devices.values():
             try:
                 state = await self._client.get_state(device)
-                self._states[device.device_id] = state
             except Exception:
                 _LOGGER.warning("Failed to get state for %s", device.name)
                 self._states.setdefault(device.device_id, {})
+                failures += 1
+                continue
+            self._states[device.device_id] = state
+            self._update_online_from_report(device.device_id, state)
+        if self._devices and failures == len(self._devices):
+            raise UpdateFailed("Could not fetch state for any device")
+
+    def _update_online_from_report(
+        self, device_id: str, state: dict[str, Any]
+    ) -> None:
+        """Derive online status from the device's last-report timestamp.
+
+        The hub's ``online`` flag reads false between the ~4 h heartbeats
+        of sleepy battery devices, so it can't be trusted directly. A
+        device is online if it reported within OFFLINE_TIME; a state
+        without a parseable ``reportAt`` leaves the previous judgment
+        unchanged.
+        """
+        report_at = state.get("reportAt")
+        if not isinstance(report_at, str):
+            return
+        reported = dt_util.parse_datetime(report_at)
+        if reported is None:
+            return
+        if reported.tzinfo is None:
+            reported = reported.replace(tzinfo=dt_util.UTC)
+        self._online[device_id] = dt_util.utcnow() - reported < OFFLINE_TIME
+
+    def is_online(self, device_id: str) -> bool:
+        """Return whether a device is considered online."""
+        return self._online.get(device_id, True)
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         """Poll device states via HTTP as a fallback.
@@ -133,7 +196,10 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             return
 
         existing = self._states.get(device_id, {})
-        self._states[device_id] = {**existing, **event.data}
+        self._states[device_id] = _merge_device_state(existing, event.data)
+        # Any message from the device proves it's alive, regardless of what
+        # the last poll said.
+        self._online[device_id] = True
         self.async_set_updated_data(self._states.copy())
 
     def get_state(self, device_id: str) -> dict[str, Any]:

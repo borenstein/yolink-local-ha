@@ -6,7 +6,7 @@ from typing import Any
 
 import aiohttp
 
-from .auth import AuthenticationError, TokenManager
+from .auth import TokenManager
 from .device import Device
 
 

@@ -32,10 +32,12 @@ The YoLink Local Hub supports both Matter and a native Local API. While Matter w
 | Device Type | Entity Type | Features |
 |-------------|-------------|----------|
 | THSensor | Sensor | Temperature, humidity, battery |
-| DoorSensor | Binary Sensor | Open/closed state, battery |
-| LeakSensor | Binary Sensor | Leak detected, battery |
+| DoorSensor | Binary Sensor, Sensor | Open/closed state, battery |
+| LeakSensor | Binary Sensor, Sensor | Leak detected, battery |
+| MotionSensor | Binary Sensor, Sensor | Motion detection, battery |
 | Outlet | Switch | On/off control |
-| Lock | Lock | Lock/unlock control |
+| MultiOutlet | Switch | Per-socket on/off control |
+| Lock / LockV2 | Lock, Sensor | Lock/unlock control, battery |
 | Siren | Siren | Trigger/stop alarm |
 
 Additional device types can be added — contributions welcome!

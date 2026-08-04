@@ -44,7 +44,14 @@ class YoLocalEntity(CoordinatorEntity[YoLocalCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available."""
-        state = self.device_state
-        return state.get("online", True)
+        """Return True if entity is available.
+
+        Combines coordinator health (hub reachability) with the per-device
+        online judgment based on report recency. The hub's raw ``online``
+        flag is deliberately not used: it reads false between the ~4 h
+        heartbeats of sleepy battery devices.
+        """
+        return super().available and self.coordinator.is_online(
+            self._device.device_id
+        )
 

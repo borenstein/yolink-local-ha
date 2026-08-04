@@ -208,6 +208,14 @@ __marimo__/
 
 # Project secrets (local YoLink hub credentials)
 .secrets.json
+.credentials
 
 # Local dashboard file (not part of the integration)
 security.yaml
+
+# Developer-only artifacts (local verification, not part of the integration/PR)
+explore_network.py
+verify_live.py
+mqtt_watch.py
+pytest.ini
+tests/
