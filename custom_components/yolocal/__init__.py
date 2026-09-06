@@ -22,6 +22,28 @@ from .coordinator import YoLocalCoordinator, create_coordinator
 _LOGGER = logging.getLogger(__name__)
 
 
+def _active_platforms() -> list[str]:
+    """Return the platforms whose Home Assistant component is importable.
+
+    The ``valve`` platform only exists in newer Home Assistant releases, so
+    we skip it (and any other unavailable component) rather than failing setup.
+    """
+    from importlib import import_module
+
+    active = []
+    for platform in PLATFORMS:
+        try:
+            import_module(f"homeassistant.components.{platform}")
+        except ImportError:
+            _LOGGER.debug(
+                "Skipping platform '%s': not available in this Home Assistant version",
+                platform,
+            )
+            continue
+        active.append(platform)
+    return active
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up YoLink Local from a config entry."""
     hass.data.setdefault(DOMAIN, {})
@@ -46,14 +68,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # all entities) have valid state before platforms are set up.
     await coordinator.async_config_entry_first_refresh()
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    platforms = _active_platforms()
+    hass.data[DOMAIN][f"{entry.entry_id}_platforms"] = platforms
+    await hass.config_entries.async_forward_entry_setups(entry, platforms)
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    platforms = hass.data[DOMAIN].get(f"{entry.entry_id}_platforms", PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, platforms)
 
     if unload_ok:
         coordinator: YoLocalCoordinator = hass.data[DOMAIN].pop(entry.entry_id)

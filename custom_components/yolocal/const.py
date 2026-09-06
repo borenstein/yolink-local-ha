@@ -1,5 +1,7 @@
 """Constants for the YoLink Local integration."""
 
+from homeassistant.const import UnitOfVolume
+
 DOMAIN = "yolocal"
 
 # Configuration keys
@@ -23,5 +25,15 @@ PLATFORMS: list[str] = [
     "lock",
     "switch",
     "siren",
+    "valve",
 ]
+
+# Water meter unit mapping (data.attributes.meterUnit)
+# 0=GAL, 1=CCF (hundred cubic feet), 2=m3, 3=L
+WATER_METER_UNITS: dict[int, str] = {
+    0: UnitOfVolume.GALLONS,
+    1: UnitOfVolume.CUBIC_FEET,
+    2: UnitOfVolume.CUBIC_METERS,
+    3: UnitOfVolume.LITERS,
+}
 

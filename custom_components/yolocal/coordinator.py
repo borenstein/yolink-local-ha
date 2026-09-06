@@ -27,6 +27,25 @@ _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = timedelta(minutes=5)
 
 
+def _deep_merge_state(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """Merge an incoming event into existing device state (one level deep).
+
+    WaterMeterController reports ``state`` as a nested object
+    (``state.valve``, ``state.meter``, ``state.waterFlowing``). A partial
+    event (e.g. a ``setState`` response carrying only ``state.valve``) must
+    not replace the whole ``state`` object and wipe out the meter reading,
+    so dict-valued keys are merged recursively one level deep.
+    """
+    merged: dict[str, Any] = dict(existing)
+    for key, value in incoming.items():
+        prev = merged.get(key)
+        if isinstance(prev, dict) and isinstance(value, dict):
+            merged[key] = {**prev, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
 class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     """Coordinator for YoLink Local devices.
 
@@ -133,7 +152,7 @@ class YoLocalCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             return
 
         existing = self._states.get(device_id, {})
-        self._states[device_id] = {**existing, **event.data}
+        self._states[device_id] = _deep_merge_state(existing, event.data)
         self.async_set_updated_data(self._states.copy())
 
     def get_state(self, device_id: str) -> dict[str, Any]:

@@ -37,8 +37,13 @@ The YoLink Local Hub supports both Matter and a native Local API. While Matter w
 | Outlet | Switch | On/off control |
 | Lock | Lock | Lock/unlock control |
 | Siren | Siren | Trigger/stop alarm |
+| WaterMeterController | Sensor | Cumulative water usage (in the meter's unit), water temperature, battery |
+| WaterMeterController | Binary Sensor | Water flowing, leak detected |
+| WaterMeterController | Valve | Open/close the water valve |
 
 Additional device types can be added — contributions welcome!
+
+> **Note:** The water valve entity for the `WaterMeterController` uses Home Assistant's `valve` platform, which requires a recent Home Assistant version. If your version predates it, the integration will skip the valve entity automatically but all water meter sensors and binary sensors still work.
 
 ## Prerequisites
 
@@ -82,7 +87,7 @@ You'll need four pieces of information from the YoLink app:
 
 1. Open HACS in Home Assistant
 2. Click the **⋮** menu → **Custom repositories**
-3. Add `https://github.com/dbborens/yolink-local-ha` with category **Integration**
+3. Add `https://github.com/borenstein/yolink-local-ha` with category **Integration**
 4. Search for "YoLink Local" and install
 5. Restart Home Assistant
 
